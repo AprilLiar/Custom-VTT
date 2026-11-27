@@ -293,7 +293,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     if (!action || !n) return undefined;
     if (isSuperMove(action)) {
       const taken = placements.flatMap((p) => (p.kind === 'die' ? [p.die] : p.kind === 'super' ? (p.dice ?? []) : []));
-      return superPair(pool, previewDie, taken) && superState(action).ok ? true : false;
+      return superPair(pool, previewDie, taken, action) && superState(action).ok ? true : false;
     }
     if (!hasDiceCost(action)) return false;
     const v = n.value + costBonus(action, fighter);

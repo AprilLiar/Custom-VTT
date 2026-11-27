@@ -112,11 +112,20 @@ export function superUsable({ move, round, usedByMe = 0, sideUsed = 0, sideLimit
 
 // The pair a Super Move is paid with: the picked number and a free one
 // matching it, both 3+. `taken`: pool indexes already placed. → [i, j] or null
-export function superPair(pool, index, taken = []) {
+// A Super Move's own cost (homebrew ones may ask 2-4 matching numbers, each
+// at least N): { count, minimum } — the book's 2 and 3 by default.
+export function superCostOf(move) {
+  const c = move?.cost?.options?.[0]?.components?.find((x) => x.kind === 'pool_number' && x.matching);
+  return { count: Math.max(2, Number(c?.count) || 2), minimum: Number(c?.minimum) || SUPER_MINIMUM };
+}
+
+// The picked number and free ones matching it — as many as the move asks.
+export function superPair(pool, index, taken = [], move = null) {
+  const { count, minimum } = superCostOf(move);
   const n = pool.find((p) => p.index === index);
-  if (!n || !(n.value >= SUPER_MINIMUM) || taken.includes(index)) return null;
-  const mate = pool.find((p) => p.index !== index && p.value === n.value && !taken.includes(p.index));
-  return mate ? [index, mate.index] : null;
+  if (!n || !(n.value >= minimum) || taken.includes(index)) return null;
+  const mates = pool.filter((p) => p.index !== index && p.value === n.value && !taken.includes(p.index)).slice(0, count - 1);
+  return mates.length === count - 1 ? [index, ...mates.map((m) => m.index)] : null;
 }
 
 // ------------------------------------------------------------------ reactions

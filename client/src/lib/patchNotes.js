@@ -3,6 +3,6 @@
 // package.json versions — a test checks they match) and rewrite `note` as ONE
 // sentence on every push to main.
 export const PATCH = {
-  version: '0.3.5',
-  note: "A figure size on the Scene stage now belongs to the character: resize them once and every Scene, old and new, shows them at that size.",
+  version: '0.3.6',
+  note: "Homebrew now covers every kind of content: Super Moves, Freestyles, Builds, Skills and Warrior Paths join Forms, Styles and Archetypes.",
 };

@@ -302,8 +302,8 @@ export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = nul
         });
         if (!ok.ok) return refuse(row.roll_id, `${action.name}: ${ok.reason}`);
       }
-      const pair = die != null ? superPair(poolOf(data), Number(die), taken) : null;
-      if (!pair) return refuse(row.roll_id, `${action.name} needs two matching numbers, each 3 or higher`);
+      const pair = die != null ? superPair(poolOf(data), Number(die), taken, action) : null;
+      if (!pair) return refuse(row.roll_id, `${action.name} needs ${action.cost?.text ? action.cost.text.toLowerCase() : 'two matching numbers, each 3 or higher'}`);
       data.placements.push({ key: `s${pair[0]}`, kind: 'super', die: pair[0], dice: pair, actionId: action.id, threshold: null, stop: null, committed: false });
       return saveBoard(row.roll_id, data, emit);
     }

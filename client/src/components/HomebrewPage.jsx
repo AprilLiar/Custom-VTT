@@ -7,6 +7,10 @@ import { useBookContent, useContent, useHomebrewState } from '../lib/patd/useCon
 import { abilityFingerprint, actionFingerprint, partState, wrenchState } from '../lib/patd/homebrewSync.js';
 import HomebrewWrench, { WrenchLegend } from './HomebrewWrench.jsx';
 import {
+  HB_KINDS,
+  KIND_PARTS,
+  SUPER_VARIANTS,
+  superCostText,
   DIE_COLORS,
   DIE_SIDES,
   HOMEBREW_TOKENS,
@@ -22,13 +26,26 @@ import {
 import { DiceRow, cardClass, rangeText, selectClass } from './builder/BuildParts.jsx';
 
 // **The homebrew builder (GM only — vttprojectplan.md, "Homebrew builder").**
-// The GM's own Forms, Styles and Archetypes, each with Abilities (written with
-// a simple rule editor, so they run as turn triggers) and Actions (reference
-// only). New items start as drafts; publishing offers them in every player's
+// The GM's own content of every kind a character picks — Forms, Styles,
+// Archetypes, Freestyles, Super Moves, Builds, Skills and Warrior's Paths —
+// with Abilities (written with a simple rule editor, so they run as turn
+// triggers) and Actions (reference until Claude automates them). New items start as drafts; publishing offers them in every player's
 // builder. "Copy from book" starts from a book entry. The wrench by each item
 // (HomebrewWrench) is its automation state — see "Commit Homebrew" in the plan.
 
-const KIND_LABEL = { form: 'Form', style: 'Style', archetype: 'Archetype' };
+const KIND_LABEL = {
+  form: 'Form',
+  style: 'Style',
+  archetype: 'Archetype',
+  freestyle: 'Freestyle',
+  superMove: 'Super Move',
+  build: 'Build',
+  skill: 'Skill',
+  warriorPath: "Warrior's Path",
+};
+// Where each kind's book entries are, for Copy from book.
+const BOOK_LIST = { form: 'forms', style: 'styles', archetype: 'archetypes', freestyle: 'freestyles', superMove: 'superMoves', build: 'builds', skill: 'skills', warriorPath: 'warriorPaths' };
+const plural = (k) => (k === 'warriorPath' ? "Warrior's Paths" : `${KIND_LABEL[k]}s`);
 const inputClass = 'min-h-9 w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 text-sm text-zinc-100 outline-none focus:border-brand-500';
 const smallBtn = 'min-h-9 panel-cut-sm border border-zinc-700 px-2.5 text-xs text-zinc-200 hover:border-zinc-500';
 const tokenName = (k) => HOMEBREW_TOKENS.find((t) => t.key === k)?.name ?? k;
@@ -53,6 +70,11 @@ const blank = (kind) => ({
     : {}),
   ...(kind === 'style' ? { range: { minimum: 1, maximum: 2 }, archetypeId: null } : {}),
   ...(kind === 'archetype' ? { archetypeKind: 'player' } : {}),
+  ...(kind === 'freestyle' ? { range: { minimum: 1, maximum: 1 }, actionDice: [{ kind: 'die', sides: 6, color: 'purple' }, { kind: 'die', sides: 4, color: 'purple' }], bannedFormIds: [] } : {}),
+  ...(kind === 'superMove' ? { ownerId: null, variant: 'alpha', costCount: 2, costMinimum: 3, actions: [{ uid: newUid(), name: '', cost: '', rulesText: '' }] } : {}),
+  ...(kind === 'build' ? { unblockable: true } : {}),
+  ...(kind === 'skill' ? { rulesText: '', formId: null } : {}),
+  ...(kind === 'warriorPath' ? { rulesText: '' } : {}),
 });
 
 export default function HomebrewPage() {
@@ -77,20 +99,20 @@ export default function HomebrewPage() {
   const start = (item) => setEdit({ ...structuredClone(item), clientKey: `k${Date.now()}` });
   const coreIds = new Set(hb.coreIds);
   const syncOf = (id) => ({ autoItem: (id && hb.automation?.items?.[id]) || null, inCore: Boolean(id) && coreIds.has(id) });
-  const bookList = { form: book.content.forms, style: book.content.styles, archetype: book.content.archetypes };
+  const bookList = Object.fromEntries(HB_KINDS.map((k) => [k, book.content[BOOK_LIST[k]] ?? []]));
 
   return (
     <div className="mx-auto w-full max-w-[120rem] space-y-4">
       <header className="space-y-1">
         <h1 className="font-display text-xl font-bold uppercase tracking-wide text-zinc-100">Homebrew</h1>
         <p className="text-xs text-zinc-500">
-          Your own Forms, Styles and Archetypes. Drafts are only offered to you; publish one to offer it in every player&rsquo;s character builder.
+          Your own Forms, Styles, Archetypes, Freestyles, Super Moves, Builds, Skills and Warrior&rsquo;s Paths. Drafts are only offered to you; publish one to offer it in every player&rsquo;s character builder.
         </p>
       </header>
       <div className="grid gap-4 md:grid-cols-[16rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)]">
         <aside className="space-y-3 self-start md:sticky md:top-0">
           <div className="flex flex-wrap gap-1.5">
-            {['form', 'style', 'archetype'].map((k) => (
+            {HB_KINDS.map((k) => (
               <button key={k} type="button" onClick={() => start(blank(k))} className={`${smallBtn} inline-flex items-center gap-1`}>
                 <Plus size={13} aria-hidden /> {KIND_LABEL[k]}
               </button>
@@ -127,12 +149,14 @@ export default function HomebrewPage() {
               </select>
             </div>
           </div>
-          {['form', 'style', 'archetype'].map((k) => {
+          {!items.length && <p className="text-xs italic text-zinc-600">Nothing yet — make something above, or copy it from the book.</p>}
+          {HB_KINDS.map((k) => {
             const list = items.filter((i) => i.kind === k);
+            // (Only the kinds that have something.)
+            if (!list.length) return null;
             return (
               <div key={k}>
-                <h2 className="mb-1 text-[10px] font-bold uppercase tracking-wide text-zinc-500">{KIND_LABEL[k]}s</h2>
-                {list.length === 0 && <p className="text-xs italic text-zinc-600">None yet.</p>}
+                <h2 className="mb-1 text-[10px] font-bold uppercase tracking-wide text-zinc-500">{plural(k)}</h2>
                 <ul className="space-y-1">
                   {list.map((i) => (
                     <li key={i.id}>
@@ -163,9 +187,9 @@ export default function HomebrewPage() {
   );
 }
 
-function Field({ label, children }) {
+function Field({ label, children, wide = false }) {
   return (
-    <label className="block space-y-1">
+    <label className={`block space-y-1 ${wide ? 'sm:col-span-2' : ''}`}>
       <span className="text-[11px] font-bold uppercase tracking-wide text-zinc-400">{label}</span>
       {children}
     </label>
@@ -324,19 +348,104 @@ function ItemEditor({ item, setItem, idx, book, sync, onClose }) {
             )}
           </>
         )}
+        {item.kind === 'freestyle' && (
+          <>
+            <Field label={`Range (${rangeText(item.range)})`}>
+              <RangeInputs range={item.range} set={(range) => set({ range })} />
+            </Field>
+            <Field label="Not with these Forms" wide>
+              <FormPicker ids={item.bannedFormIds} forms={idx.content.forms} set={(bannedFormIds) => set({ bannedFormIds })} />
+            </Field>
+          </>
+        )}
+        {item.kind === 'superMove' && (
+          <>
+            <Field label="Archetype">
+              <select value={item.ownerId ?? ''} onChange={(e) => set({ ownerId: e.target.value || null })} className={`${selectClass} w-full`}>
+                <option value="">— pick one —</option>
+                {archetypes.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                    {a.homebrew ? ' ✦' : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Kind">
+              <select value={item.variant} onChange={(e) => set({ variant: e.target.value })} className={`${selectClass} w-full`}>
+                {SUPER_VARIANTS.map((v) => (
+                  <option key={v} value={v}>
+                    {v === 'alpha' ? 'Alpha' : v === 'delta' ? 'Delta' : 'Villain'}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label={`Cost: ${superCostText(item.costCount, item.costMinimum)}`} wide>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+                <select value={item.costCount} onChange={(e) => set({ costCount: Number(e.target.value) })} className={selectClass} aria-label="How many matching numbers">
+                  {[2, 3, 4].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+                matching, each at least
+                <input type="number" min={1} max={12} value={item.costMinimum} onChange={(e) => set({ costMinimum: Number(e.target.value) })} className={`${selectClass} w-16`} aria-label="Lowest number" />
+              </div>
+            </Field>
+          </>
+        )}
+        {item.kind === 'build' && (
+          <label className="flex items-center gap-1.5 self-end text-xs text-zinc-300">
+            <input type="checkbox" checked={item.unblockable} onChange={(e) => set({ unblockable: e.target.checked })} />
+            Its Abilities can&rsquo;t be blocked (like every book Build)
+          </label>
+        )}
+        {item.kind === 'skill' && (
+          <Field label="Taught by a Form (optional)">
+            <select value={item.formId ?? ''} onChange={(e) => set({ formId: e.target.value || null })} className={`${selectClass} w-full`}>
+              <option value="">— none: any hero may swap it in —</option>
+              {idx.content.forms.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                  {f.homebrew ? ' ✦' : ''}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
       </section>
 
-      {item.kind === 'form' && <DiceEditor dice={item.actionDice} set={(actionDice) => set({ actionDice })} />}
+      {item.kind === 'superMove' && (
+        <Field label="What it does (Claude automates it from this text)">
+          <textarea
+            value={item.actions[0]?.rulesText ?? ''}
+            rows={4}
+            onChange={(e) => set({ actions: [{ ...(item.actions[0] ?? { uid: newUid(), name: '', cost: '' }), rulesText: e.target.value }] })}
+            placeholder="e.g. Deal 6 damage to an adjacent enemy. They can't use Free Movement until after their next turn."
+            className={`${inputClass} py-1.5`}
+          />
+        </Field>
+      )}
+      {(item.kind === 'skill' || item.kind === 'warriorPath') && (
+        <Field label={item.kind === 'skill' ? 'What the Skill lets you do' : 'What happens when the Path triggers'}>
+          <textarea value={item.rulesText} rows={3} onChange={(e) => set({ rulesText: e.target.value })} className={`${inputClass} py-1.5`} />
+        </Field>
+      )}
+
+      {(item.kind === 'form' || item.kind === 'freestyle') && <DiceEditor dice={item.actionDice} set={(actionDice) => set({ actionDice })} />}
 
       <Field label="Description">
         <textarea value={item.descriptionText} rows={3} onChange={(e) => set({ descriptionText: e.target.value })} className={`${inputClass} py-1.5`} />
       </Field>
 
       </div>
-      <AbilitiesEditor kind={item.kind} abilities={item.abilities} autoItem={sync.autoItem} set={(abilities) => set({ abilities })} />
-      <div className="xl:col-span-2 2xl:col-span-1">
-        <ActionsEditor actions={item.actions} autoItem={sync.autoItem} set={(actions) => set({ actions })} />
-      </div>
+      {KIND_PARTS[item.kind].abilities && <AbilitiesEditor kind={item.kind} abilities={item.abilities} autoItem={sync.autoItem} set={(abilities) => set({ abilities })} />}
+      {KIND_PARTS[item.kind].actions && (
+        <div className="xl:col-span-2 2xl:col-span-1">
+          <ActionsEditor actions={item.actions} autoItem={sync.autoItem} set={(actions) => set({ actions })} />
+        </div>
+      )}
       </div>
     </div>
   );
@@ -631,5 +740,35 @@ function ActionsEditor({ actions, autoItem, set }) {
         </button>
       )}
     </section>
+  );
+}
+
+function RangeInputs({ range, set }) {
+  return (
+    <div className="flex items-center gap-2">
+      <input type="number" min={0} max={9} value={range.minimum} onChange={(e) => set({ ...range, minimum: Number(e.target.value) })} className={inputClass} aria-label="Minimum range" />
+      <span className="text-zinc-500">to</span>
+      <input type="number" min={0} max={12} value={range.maximum} onChange={(e) => set({ ...range, maximum: Number(e.target.value) })} className={inputClass} aria-label="Maximum range" />
+    </div>
+  );
+}
+
+// Forms to tick (a Freestyle's banned Forms).
+function FormPicker({ ids, forms, set }) {
+  const on = new Set(ids);
+  return (
+    <div className="flex flex-wrap gap-1">
+      {forms.map((f) => (
+        <button
+          key={f.id}
+          type="button"
+          aria-pressed={on.has(f.id)}
+          onClick={() => set(on.has(f.id) ? ids.filter((x) => x !== f.id) : [...ids, f.id])}
+          className={`min-h-8 panel-cut-sm border px-2 text-[11px] ${on.has(f.id) ? 'border-red-500 bg-red-900/30 text-red-200' : 'border-zinc-700 text-zinc-400 hover:text-zinc-200'}`}
+        >
+          {f.name}
+        </button>
+      ))}
+    </div>
   );
 }

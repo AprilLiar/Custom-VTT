@@ -115,6 +115,26 @@ console.log('\n--- publish and delete ---');
 gm.emit('homebrew:publish', { id: formId, published: true });
 await sleep(400);
 check('publishing flips the draft', (await mine()).find((i) => i.id === formId).published === true);
+console.log('\n--- every kind: a Super Move, a Build, a Skill, a Freestyle, a Path ---');
+const kinds = {};
+for (const item of [
+  { kind: 'superMove', name: `Comet ${stamp}`, ownerId: archId, variant: 'alpha', costCount: 3, costMinimum: 2, published: true, actions: [{ rulesText: 'Deal 9 damage to an adjacent enemy.' }] },
+  { kind: 'build', name: `Wiry Build ${stamp}`, published: true, abilities: [{ name: 'Wiry', rules: [{ moment: 'own_turn.start', steps: [{ kind: 'gain_tokens', token: 'speed', amount: 1, who: 'self' }] }] }] },
+  { kind: 'skill', name: `Juggling ${stamp}`, rulesText: 'You juggle.', published: true },
+  { kind: 'freestyle', name: `Rain Freestyle ${stamp}`, published: true, range: { minimum: 1, maximum: 2 }, actionDice: [{ kind: 'die', sides: 6, color: 'purple' }] },
+  { kind: 'warriorPath', name: `Path of the Eel ${stamp}`, rulesText: 'Heal 2.', published: true, abilities: [{ name: 'Eel', rules: [{ moment: 'warrior_path.trigger', steps: [{ kind: 'heal', amount: 2, who: 'self' }] }] }] },
+]) {
+  s = saved(gm);
+  gm.emit('homebrew:save', { item });
+  kinds[item.kind] = (await s).id;
+}
+check('each kind saves under its own id', kinds.superMove?.startsWith('super-move.hb-') && kinds.build?.startsWith('build.hb-') && kinds.skill?.startsWith('skill.hb-') && kinds.freestyle?.startsWith('freestyle.hb-') && kinds.warriorPath?.startsWith('warrior-path.hb-'), JSON.stringify(kinds));
+p.emit('build:save', { characterId: hero.id, build: { type: 'hero-type.focused', archetypes: [{ id: archId, variant: 'focused' }], stances: [{ formId, styleId, alias: 'Ember' }], level: 1, buildId: kinds.build, superMoveIds: [kinds.superMove] } });
+await sleep(500);
+const withSuper = (await jf(`/api/characters/${hero.id}/build`)).build;
+check('a character takes the homebrew Super Move and Build', withSuper.superMoveIds.includes(kinds.superMove) && withSuper.buildId === kinds.build, JSON.stringify(withSuper));
+for (const id of Object.values(kinds)) gm.emit('homebrew:delete', { id });
+
 gm.emit('fight:end', { mode: 'combat' });
 gm.emit('scene:delete', { sceneId: scene.id });
 for (const id of [formId, styleId, archId]) gm.emit('homebrew:delete', { id });

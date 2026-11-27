@@ -12,7 +12,7 @@
 //   - Only rules wording greys the wrench: an Ability's rules text and rule
 //     steps, an Action's cost and rules text. Names, descriptions, dice and
 //     range don't.
-import { isHomebrewId } from './homebrew.js';
+import { HB_KINDS, isHomebrewId } from './homebrew.js';
 
 export const CORE_ITEMS_DIR = 'homebrew/items';
 export const AUTOMATION_PATH = 'homebrew/automation.json';
@@ -68,6 +68,8 @@ export function partState(part, autoItem) {
 //   'waiting'   (outline) — committed to the core, not automated yet;
 //   'none'                — never committed.
 export function wrenchState(item, { autoItem = null, inCore = false } = {}) {
+  // Nothing to automate (a Skill): committed is as far as it goes.
+  if (!partsOf(item).length) return inCore ? 'automated' : 'none';
   if (autoItem) return partsOf(item).every((p) => partState(p, autoItem) === 'automated') ? 'automated' : 'stale';
   return inCore ? 'waiting' : 'none';
 }
@@ -92,7 +94,7 @@ export function parseCoreFile(text, fileId = null) {
   try {
     const item = JSON.parse(text);
     if (!item || !isHomebrewId(item.id) || (fileId && item.id !== fileId)) return null;
-    if (!['form', 'style', 'archetype'].includes(item.kind)) return null;
+    if (!HB_KINDS.includes(item.kind)) return null;
     return { ...item, published: true };
   } catch {
     return null;
