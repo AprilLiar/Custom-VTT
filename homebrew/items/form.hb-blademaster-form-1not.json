@@ -1,0 +1,82 @@
+{
+  "id": "form.hb-blademaster-form-1not",
+  "kind": "form",
+  "name": "Blademaster Form",
+  "descriptionText": "At the start of ally turns, gain 1 Power Token.\nAt the start of enemy turns, gain 1 Iron Token.",
+  "aliases": [
+    "Swordsman",
+    "Samurai",
+    "Knight"
+  ],
+  "actionDice": [
+    {
+      "kind": "die",
+      "sides": 4,
+      "color": "purple"
+    },
+    {
+      "kind": "die",
+      "sides": 6,
+      "color": "green"
+    },
+    {
+      "kind": "die",
+      "sides": 8,
+      "color": "green"
+    },
+    {
+      "kind": "die",
+      "sides": 10,
+      "color": "green"
+    }
+  ],
+  "skillId": null,
+  "customSkill": null,
+  "abilities": [
+    {
+      "uid": "t70q1l2v",
+      "name": "Blademaster Form",
+      "rulesText": "At the start of ally turns, gain 1 Power Token.\nAt the start of enemy turns, gain 1 Iron Token.",
+      "rules": [
+        {
+          "moment": "allied_turn.start",
+          "optional": false,
+          "steps": [
+            {
+              "kind": "gain_tokens",
+              "who": "self",
+              "amount": 1,
+              "token": "power"
+            }
+          ]
+        },
+        {
+          "moment": "enemy_turn.start",
+          "optional": false,
+          "steps": [
+            {
+              "kind": "gain_tokens",
+              "who": "self",
+              "amount": 1,
+              "token": "iron"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "uid": "dx7ojwdb",
+      "name": "Readiness",
+      "cost": "3 or 6 or 9 Iron Tokens",
+      "rulesText": "Can be used during other's turns.\nGain 1 Control Token.\n6+: Gain 1 Control Token.\n9+: Gain 1 Control Token."
+    },
+    {
+      "uid": "zosnluyk",
+      "name": "Determination",
+      "cost": "3 or 6 or 9 Power Tokens",
+      "rulesText": "Can be used during other's turns.\nMove 1, deal 1 damage, then deal 1 damage.\n6+: Move 1, deal 1 damage, then deal 1 damage.\n9+: Move 1, deal 1 damage, then deal 1 damage"
+    }
+  ]
+}

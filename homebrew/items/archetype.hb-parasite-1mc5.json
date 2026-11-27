@@ -1,0 +1,44 @@
+{
+  "id": "archetype.hb-parasite-1mc5",
+  "kind": "archetype",
+  "name": "Parasite",
+  "descriptionText": "Parasites live off others and unable to survive by themselves. Be it friend or foe - you do not really care, as survival is the only goal in your head.",
+  "archetypeKind": "player",
+  "abilities": [
+    {
+      "uid": "vzljv72b",
+      "name": "Focused Parasite",
+      "rulesText": "At the start of your turn, select a creature to Attach to, that is within range, and Teleport to their space. While Attached, you occupy the same space as the creature and follow their Movement, but not Teleportation.\nAny Forced Movement against you is reduced by 2.\nYou remain Attached, until you are subjected to Forced Movement that moves you.",
+      "variant": "focused",
+      "rules": [
+        {
+          "moment": "own_turn.start",
+          "optional": false,
+          "steps": []
+        }
+      ]
+    },
+    {
+      "uid": "d7qj4jjr",
+      "name": "Fused Parasite",
+      "rulesText": "At the start of your turn, select a creature to Attach to, that is within range, and Teleport to their space. While Attached, you occupy the same space as the creature and follow their Movement, but not Teleportation.\nAny Forced Movement against you is reduced by 1.\nYou remain Attached, until you are subjected to Forced Movement that moves you.",
+      "variant": "fused",
+      "rules": []
+    },
+    {
+      "uid": "4pnkneys",
+      "name": "Frantic Parasite",
+      "rulesText": "At the start of your turn, select a creature to Attach to, that is within range, and Teleport to their space. While Attached, you occupy the same space as the creature and follow their Movement, but not Teleportation.\nAny Forced Movement against you is reduced by 2.\nYou remain Attached, until you are subjected to Forced Movement that moves you, or until you start your next turn.",
+      "variant": "frantic",
+      "rules": []
+    }
+  ],
+  "actions": [
+    {
+      "uid": "d497kjtx",
+      "name": "Leech",
+      "cost": "3+ or 6+",
+      "rulesText": "Steal up to 2 non-Unique Tokens or up to 1 HP from the Attached creature.\n6+: Steal 2 more Tokens or 1 more HP instead."
+    }
+  ]
+}
